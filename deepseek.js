@@ -57,6 +57,7 @@
 
     // 查找目标元素并插入文本
     function findAndInsertText(text) {
+        text = `<function_result>${text}</function_result>`;
         const textareas = document.querySelectorAll('textarea');
 
         if (textareas.length === 0) {
