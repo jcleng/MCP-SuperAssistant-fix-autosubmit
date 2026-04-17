@@ -1087,6 +1087,12 @@ IMPORTANT: Do not call this tool more than 3 times per question. If you cannot f
 - `libraryId`: Exact Context7-compatible library ID (e.g., '/mongodb/docs', '/vercel/next.js', '/supabase/supabase', '/vercel/next.js/v14.3.0-canary.87') retrieved from 'resolve-library-id' or directly from user query in the format '/org/project' or '/org/project/version'. (string) (required)
 - `query`: The question or task you need help with. Be specific and include relevant details. Good: 'How to set up authentication with JWT in Express.js' or 'React useEffect cleanup function examples'. Bad: 'auth' or 'hooks'. The query is sent to the Context7 API for processing. Do not include any sensitive or confidential information such as API keys, passwords, credentials, personal data, or proprietary code in your query. (string) (required)
 
+<custom_instructions>
+先获取mcp有哪些并记录, 所有的反馈给客户端的指令需要等待客户端的回复, 不要一次执行多个指令;
+根据需求对项目进行修改,项目目录是`/home/jcleng/work/mywork`,所有的操作本项目的都在项目里面进行操作,
+最后操作完成之后,检查本项目文件夹变更的文件和目录,除了依赖文件和临时缓存文件外需要把文件和目录的所有权修改为1000:100
+</custom_instructions>
+
 <\system>
 
 IMPORTANT: You need to place function call jsonl tags in proper jsonl code block like:

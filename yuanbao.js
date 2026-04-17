@@ -267,20 +267,31 @@
 
             // 将所有pre标签的内容拼接起来
             const jsonlDataArr = preElementsText
-                // 按换行符分割每一行 JSON 字符串
-                .split('\n')
-                // 过滤空行（防止数据有空行报错）
-                .filter(line => line.trim() !== '')
-                // 逐行解析为 JSON 对象
-                .map(line => JSON.parse(line.replace(/“/g, '"')
-                    .replace(/”/g, '"')
-                    .replace(/＂/g, '"')
-                    // 替换全角逗号为半角逗号
-                    .replace(/，/g, ',')
-                    .replace(/　/g, ' ')
-                    // 替换全角空格为半角空格
-                    .replace(/\u3000/g, ' ')
-                    .replace(/\u00A0/g, ' ')));
+                // 1. 统一清洗所有特殊空白字符（先处理，避免分割异常）
+                .replace(/\u3000|\u00A0/g, ' ')  // 全角空格、不间断空格 → 半角空格
+                // 2. 按【真实换行】分割行（不使用任何中文分隔符，彻底避免冲突）
+                .split(/\r?\n/)
+                // 3. 过滤空行、纯空白行
+                .filter(line => {
+                    const trimLine = line.trim();
+                    return trimLine !== '' && !/^\s*$/.test(trimLine);
+                })
+                // 4. 清洗字符 + 解析 JSON（更严谨的替换逻辑）
+                .map(line => {
+                    const cleanedLine = line
+                        .replace(/[“”＂]/g, '"')       // 统一各类双引号为标准双引号
+                        .replace(/，/g, ',')           // 全角逗号 → 半角逗号
+                        .replace(/\s+/g, ' ');         // 多个空格合并为一个（可选，更干净）
+                    try {
+                        return JSON.parse(cleanedLine);
+                    } catch (e) {
+                        console.warn('JSON 解析失败，跳过该行:', e, cleanedLine);
+                        return null; // 解析失败不中断整个流程
+                    }
+                })
+                // 5. 过滤解析失败的 null 值
+                .filter(item => item !== null);
+
 
 
             // console.log('找到JSONL数据:', jsonlDataArr);
