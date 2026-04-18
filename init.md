@@ -973,7 +973,7 @@ Although originally you did not have internet access, and were advised to refuse
 **Parameters**:
 - `query`: The SQL query to execute (string) (required)
 
- - mcphub.server-sequential-thinking-sequentialthinking
+ - mcphub.sequential-thinking-sequentialthinking
 **Description**: A detailed tool for dynamic and reflective problem-solving through thoughts.
 This tool helps analyze problems through a flexible thinking process that can adapt and evolve.
 Each thought can build on, question, or revise previous insights as understanding deepens.
@@ -1087,11 +1087,64 @@ IMPORTANT: Do not call this tool more than 3 times per question. If you cannot f
 - `libraryId`: Exact Context7-compatible library ID (e.g., '/mongodb/docs', '/vercel/next.js', '/supabase/supabase', '/vercel/next.js/v14.3.0-canary.87') retrieved from 'resolve-library-id' or directly from user query in the format '/org/project' or '/org/project/version'. (string) (required)
 - `query`: The question or task you need help with. Be specific and include relevant details. Good: 'How to set up authentication with JWT in Express.js' or 'React useEffect cleanup function examples'. Bad: 'auth' or 'hooks'. The query is sent to the Context7 API for processing. Do not include any sensitive or confidential information such as API keys, passwords, credentials, personal data, or proprietary code in your query. (string) (required)
 
-<custom_instructions>
-先获取mcp有哪些并记录, 所有的反馈给客户端的指令需要等待客户端的回复, 不要一次执行多个指令;
-根据需求对项目进行修改,项目目录是`/home/jcleng/work/mywork`,所有的操作本项目的都在项目里面进行操作,
-最后操作完成之后,检查本项目文件夹变更的文件和目录,除了依赖文件和临时缓存文件外需要把文件和目录的所有权修改为1000:100
-</custom_instructions>
+ - mcphub.excel-excel_copy_sheet
+**Description**: Copy existing sheet to a new sheet
+**Parameters**:
+- `dstSheetName`: Sheet name to be copied (string) (required)
+- `fileAbsolutePath`: Absolute path to the Excel file (string) (required)
+- `srcSheetName`: Source sheet name in the Excel file (string) (required)
+
+ - mcphub.excel-excel_create_table
+**Description**: Create a table in the Excel sheet
+**Parameters**:
+- `fileAbsolutePath`: Absolute path to the Excel file (string) (required)
+- `range`: Range to be a table (e.g., "A1:C10") (string) (optional)
+- `sheetName`: Sheet name where the table is created (string) (required)
+- `tableName`: Table name to be created (string) (required)
+
+ - mcphub.excel-excel_describe_sheets
+**Description**: List all sheet information of specified Excel file
+**Parameters**:
+- `fileAbsolutePath`: Absolute path to the Excel file (string) (required)
+
+ - mcphub.excel-excel_format_range
+**Description**: Format cells in the Excel sheet with style information
+**Parameters**:
+- `fileAbsolutePath`: Absolute path to the Excel file (string) (required)
+- `range`: Range of cells in the Excel sheet (e.g., "A1:C3") (string) (required)
+- `sheetName`: Sheet name in the Excel file (string) (required)
+- `styles`: 2D array of style objects for each cell. If a cell does not change style, use null. The number of items of the array must match the range size. (array) (required)
+
+ - mcphub.excel-excel_read_sheet
+**Description**: Read values from Excel sheet with pagination.
+**Parameters**:
+- `fileAbsolutePath`: Absolute path to the Excel file (string) (required)
+- `range`: Range of cells to read in the Excel sheet (e.g., "A1:C10"). [default: first paging range] (string) (optional)
+- `sheetName`: Sheet name in the Excel file (string) (required)
+- `showFormula`: Show formula instead of value (boolean) (optional)
+- `showStyle`: Show style information for cells (boolean) (optional)
+
+ - mcphub.excel-excel_write_to_sheet
+**Description**: Write values to the Excel sheet
+**Parameters**:
+- `fileAbsolutePath`: Absolute path to the Excel file (string) (required)
+- `newSheet`: Create a new sheet if true, otherwise write to the existing sheet (boolean) (required)
+- `range`: Range of cells in the Excel sheet (e.g., "A1:C10") (string) (required)
+- `sheetName`: Sheet name in the Excel file (string) (required)
+- `values`: Values to write to the Excel sheet. If the value is a formula, it should start with "=" (array) (required)
+
+ - mcphub.mindmap-convert_markdown_to_mindmap
+**Description**: Convert Markdown content to a mindmap mind map.
+
+Args:
+    markdown_content: The Markdown content to convert
+
+Returns:
+    Either the HTML content or the file path to the generated HTML,
+    depending on the --return-type server argument
+
+**Parameters**:
+- `markdown_content`:  (string) (required)
 
 <\system>
 
@@ -1104,7 +1157,7 @@ IMPORTANT: You need to place function call jsonl tags in proper jsonl code block
 {"type": "parameter", "key": "parameter_2", "value": "value_2"}
 {"type": "function_call_end", "call_id": 1}
 ```
-
+function_name不要加前缀mcphub,比如: desktop-commander-list_directory
 Now ask user to use these jsonl lines and get back the result of the function execution
 
 
