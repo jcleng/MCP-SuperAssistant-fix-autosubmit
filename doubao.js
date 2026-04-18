@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         腾讯元宝
+// @name         豆包AutoMCP
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  获取jsonl数据执行任务
 // @author       You
-// @match        https://yuanbao.tencent.com/*
+// @match        https://www.doubao.com/*
 // @grant        none
 // ==/UserScript==
 
@@ -29,7 +29,7 @@
     // 查找并插入文本到输入框
     function findAndInsertText(text) {
         text = `<function_result>${text}</function_result>`;
-        const textareas = document.querySelectorAll('.chat-input-editor');
+        const textareas = document.querySelectorAll('textarea');
 
         if (textareas.length === 0) {
             console.log('未找到textarea元素');
@@ -47,7 +47,7 @@
                 console.log('通过execCommand插入成功');
                 //
                 setTimeout(() => {
-                    const sendBtn = document.getElementById('yuanbao-send-btn');
+                    const sendBtn = document.getElementById('flow-end-msg-send');
                     if (sendBtn) {
                         sendBtn.click();
                         console.log('已点击发送按钮');
@@ -144,8 +144,8 @@
         console.log('jsonRpcRequest', jsonRpcRequest);
         // 检查重复 call_id
         if (jsonRpcRequest.id && processedCallIds.includes(jsonRpcRequest.id)) {
-            console.log(`已处理过call_id: ${jsonRpcRequest.id}，跳过`);
-            return null;
+            // console.log(`已处理过call_id: ${jsonRpcRequest.id}，跳过`);
+            // return null;
         }
 
         console.log("发送JSON-RPC请求:\n", JSON.stringify(jsonRpcRequest, null, 2));
@@ -459,7 +459,7 @@
  */
     async function getStablePreElementText(lastResponseMessage) {
         // 获取目标元素
-        const targetElement = lastResponseMessage?.querySelectorAll('.language-jsonl')[0];
+        const targetElement = lastResponseMessage?.querySelectorAll('.code-area')[0];
 
         if (!targetElement) {
             console.warn('No element with class .language-jsonl found');
@@ -486,7 +486,7 @@
     async function mainLoop() {
         try {
             // 查找最后一个具有agent-chat__speech-text--box-left类的元素
-            const responseMessages = document.querySelectorAll('.agent-chat__speech-text--box-left');
+            const responseMessages = document.querySelectorAll('[data-copy-telemetry="right_click_copy"]');
             const lastResponseMessage = responseMessages[responseMessages.length - 1];
             // 获取所有pre标签
             // var preElementsText = lastResponseMessage.querySelectorAll('.language-jsonl')[0].textContent;

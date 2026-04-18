@@ -145,8 +145,8 @@
         console.log('jsonRpcRequest', jsonRpcRequest);
         // 检查重复 call_id
         if (jsonRpcRequest.id && processedCallIds.includes(jsonRpcRequest.id)) {
-            console.log(`已处理过call_id: ${jsonRpcRequest.id}，跳过`);
-            return null;
+            // console.log(`已处理过call_id: ${jsonRpcRequest.id}，跳过`);
+            // return null;
         }
 
         console.log("发送JSON-RPC请求:\n", JSON.stringify(jsonRpcRequest, null, 2));
