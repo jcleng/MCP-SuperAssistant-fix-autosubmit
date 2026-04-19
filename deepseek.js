@@ -32,6 +32,7 @@
 `;
     let lastText = '';
     const initMdUrl = 'https://gitproxy.mrhjx.cn/https://raw.githubusercontent.com/jcleng/MCP-SuperAssistant-fix-autosubmit/refs/heads/main/init.md';
+    const cworkMdUrl = 'https://gitproxy.mrhjx.cn/https://raw.githubusercontent.com/Lucifer1H/open-cowork/refs/heads/main/command/cowork.md';
     // 查找并插入文本到输入框
     function findAndInsertText(text) {
         text = `<function_result>${text}</function_result>`;
@@ -950,6 +951,19 @@
 
         content.innerHTML = `
             <h3 style="margin: 0 0 16px 0;">💬 自定义指令</h3>
+            <div style="margin-bottom: 12px;">
+                <select id="command-source-select" style="
+                    padding: 8px 12px;
+                    border: 1px solid #ddd;
+                    border-radius: 6px;
+                    font-size: 14px;
+                    cursor: pointer;
+                    width: 100%;
+                ">
+                    <option value="custom">自定义输入</option>
+                    <option value="cwork">Cwork 指令</option>
+                </select>
+            </div>
             <textarea id="custom-command-input" style="
                 width: 100%;
                 height: 150px;
@@ -981,6 +995,23 @@
 
         modal.appendChild(content);
         document.body.appendChild(modal);
+
+        document.getElementById('command-source-select').onchange = async (e) => {
+            const textarea = document.getElementById('custom-command-input');
+            if (e.target.value === 'cwork') {
+                textarea.value = '加载中...';
+                try {
+                    const res = await fetch(cworkMdUrl);
+                    const text = await res.text();
+                    textarea.value = text;
+                } catch (err) {
+                    textarea.value = '加载失败: ' + err.message;
+                }
+            } else if (e.target.value === 'custom') {
+                textarea.value = '';
+                textarea.placeholder = '请输入您的自定义指令...';
+            }
+        };
 
         document.getElementById('modal-cancel').onclick = () => modal.remove();
         document.getElementById('modal-send').onclick = () => {
