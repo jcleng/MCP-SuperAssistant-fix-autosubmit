@@ -579,7 +579,7 @@
         // 获取目标元素：查找包含span内容为"jsonl"的.md-code-block里面的第一个pre
         const codeBlocks = lastResponseMessage?.querySelectorAll('.md-code-block');
         let targetElement = null;
-        
+
         for (const block of codeBlocks) {
             const span = block.querySelector('span');
             if (span && span.textContent.trim() === 'jsonl') {
@@ -587,7 +587,7 @@
                 break;
             }
         }
-        
+
         const targetElementBody = lastResponseMessage;
 
         if (!targetElement) {
@@ -608,7 +608,19 @@
 
         return firstType === 'function_call_start' && lastType === 'function_call_end';
     }
-
+    // 执行最后一次jsonl
+    async function runJsonl() {
+        const responseMessages = document.querySelectorAll('.ds-markdown');
+        const lastResponseMessage = responseMessages[responseMessages.length - 1];
+        const preElementsText = await getStablePreElementText(lastResponseMessage);
+        const jsonlDataArr = extractJSONParameters(preElementsText);
+        // 调用MCP服务
+        callMCPWithJSONRPC(jsonlDataArr, (resultText) => {
+            console.log('MCP调用完成，调用回调函数', resultText);
+            findAndInsertText(resultText);
+            lastText = preElementsText;
+        });
+    }
     /**
      * 主循环函数
      */
@@ -688,7 +700,7 @@
                         return;
                     }
                     if (!isValidSequence(jsonlDataArr)) {
-                        findAndInsertText(jsonlErr);
+                        // findAndInsertText(jsonlErr);
                         return;
                     }
 
@@ -700,7 +712,7 @@
                     });
                 } else {
                     if (jsonlDataArr?.length > 0) {
-                        findAndInsertText(jsonlErr);
+                        // findAndInsertText(jsonlErr);
                         return;
                     }
                     console.log('未找到call_id，跳过');
@@ -760,6 +772,7 @@
             { text: '✨ 初始化数据', action: 'custom' },
             { text: '❌ jsonl格式错误', action: 'submit' },
             { text: '💬 自定义指令', action: 'command' },
+            { text: '📄执行jsonl', action: 'run_jsonl' },
         ];
 
         menuItems.forEach(item => {
@@ -802,6 +815,8 @@
             submitCurrentInput();
         } else if (action === 'command') {
             showCommandModal();
+        } else if (action === 'run_jsonl') {
+            runJsonl();
         }
     }
 
