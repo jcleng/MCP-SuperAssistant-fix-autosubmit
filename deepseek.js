@@ -25,7 +25,7 @@
 {"type": "function_call_end", "call_id": 1}
 `;
     let lastText = '';
-
+    const initMdUrl = 'https://gitproxy.mrhjx.cn/https://raw.githubusercontent.com/jcleng/MCP-SuperAssistant-fix-autosubmit/refs/heads/main/init.md';
     // 查找并插入文本到输入框
     function findAndInsertText(text) {
         text = `<function_result>${text}</function_result>`;
@@ -55,7 +55,7 @@
                     } else {
                         console.log('没找到按钮，用方案2');
                     }
-                }, 3000);
+                }, 5000);
 
 
 
@@ -585,6 +585,265 @@
             console.error('主循环执行出错:', error);
         }
     }
+
+    // 创建悬浮按钮和菜单
+    function createFloatingButton() {
+        const btn = document.createElement('div');
+        btn.id = 'deepseek-mcp-fab';
+        btn.innerHTML = '📋';
+        btn.style.cssText = `
+            position: fixed;
+            bottom: 80px;
+            right: 20px;
+            width: 50px;
+            height: 50px;
+            background: #2563eb;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 999999;
+            transition: transform 0.2s;
+        `;
+        btn.onmouseenter = () => btn.style.transform = 'scale(1.1)';
+        btn.onmouseleave = () => btn.style.transform = 'scale(1)';
+
+        const menu = document.createElement('div');
+        menu.id = 'deepseek-mcp-menu';
+        menu.style.cssText = `
+            position: fixed;
+            bottom: 140px;
+            right: 20px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+            display: none;
+            flex-direction: column;
+            min-width: 180px;
+            overflow: hidden;
+            z-index: 999999;
+        `;
+
+        const menuItems = [
+            { text: '✨ 初始化数据', action: 'custom' },
+            { text: '❌ jsonl格式错误', action: 'submit' },
+            { text: '💬 自定义指令', action: 'command' },
+        ];
+
+        menuItems.forEach(item => {
+            const menuItem = document.createElement('div');
+            menuItem.textContent = item.text;
+            menuItem.style.cssText = `
+                padding: 14px 18px;
+                cursor: pointer;
+                border-bottom: 1px solid #eee;
+                font-size: 14px;
+                color: #333;
+            `;
+            menuItem.onmouseenter = () => menuItem.style.background = '#f5f5f5';
+            menuItem.onmouseleave = () => menuItem.style.background = 'white';
+            menuItem.onclick = () => handleMenuAction(item.action);
+            menu.appendChild(menuItem);
+        });
+
+        btn.onclick = () => {
+            menu.style.display = menu.style.display === 'flex' ? 'none' : 'flex';
+        };
+
+        document.body.appendChild(btn);
+        document.body.appendChild(menu);
+
+        // 点击其他地方关闭菜单
+        document.addEventListener('click', (e) => {
+            if (!btn.contains(e.target) && !menu.contains(e.target)) {
+                menu.style.display = 'none';
+            }
+        });
+    }
+
+    function handleMenuAction(action) {
+        document.getElementById('deepseek-mcp-menu').style.display = 'none';
+
+        if (action === 'custom') {
+            showCustomInputModal();
+        } else if (action === 'submit') {
+            submitCurrentInput();
+        } else if (action === 'command') {
+            showCommandModal();
+        }
+    }
+
+    async function showCustomInputModal() {
+        const modal = document.createElement('div');
+        modal.id = 'deepseek-mcp-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000000;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+        `;
+
+        content.innerHTML = `
+            <h3 style="margin: 0 0 16px 0;">📝 插入自定义数据</h3>
+            <textarea id="custom-jsonl-input" style="
+                width: 100%;
+                height: 300px;
+                padding: 12px;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                font-family: monospace;
+                font-size: 13px;
+                resize: vertical;
+                box-sizing: border-box;
+            " placeholder='请输入'></textarea>
+            <div style="margin-top: 16px; display: flex; gap: 12px; justify-content: flex-end;">
+                <button id="modal-cancel" style="
+                    padding: 10px 20px;
+                    border: 1px solid #ddd;
+                    background: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">取消</button>
+                <button id="modal-insert-only" style="
+                    padding: 10px 20px;
+                    border: none;
+                    background: #6b7280;
+                    color: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">只插入</button>
+                <button id="modal-insert-submit" style="
+                    padding: 10px 20px;
+                    border: none;
+                    background: #2563eb;
+                    color: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">插入并提交</button>
+            </div>
+        `;
+
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+        const response = await fetch(initMdUrl);
+        const markdown = await response.text();
+        document.getElementById('custom-jsonl-input').innerText = markdown;
+
+        document.getElementById('modal-cancel').onclick = () => modal.remove();
+        document.getElementById('modal-insert-only').onclick = () => {
+            const text = document.getElementById('custom-jsonl-input').value;
+            if (text.trim()) {
+                findAndInsertText(text);
+            }
+            modal.remove();
+        };
+        document.getElementById('modal-insert-submit').onclick = () => {
+            const text = document.getElementById('custom-jsonl-input').value;
+            if (text.trim()) {
+                findAndInsertText(text);
+            }
+            modal.remove();
+        };
+
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.remove();
+        };
+    }
+
+    function submitCurrentInput() {
+        findAndInsertText(jsonlErr);
+    }
+
+    function showCommandModal() {
+        const modal = document.createElement('div');
+        modal.id = 'deepseek-mcp-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000000;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+        `;
+
+        content.innerHTML = `
+            <h3 style="margin: 0 0 16px 0;">💬 自定义指令</h3>
+            <textarea id="custom-command-input" style="
+                width: 100%;
+                height: 150px;
+                padding: 12px;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                font-size: 14px;
+                resize: vertical;
+                box-sizing: border-box;
+            " placeholder="请输入您的自定义指令..."></textarea>
+            <div style="margin-top: 16px; display: flex; gap: 12px; justify-content: flex-end;">
+                <button id="modal-cancel" style="
+                    padding: 10px 20px;
+                    border: 1px solid #ddd;
+                    background: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">取消</button>
+                <button id="modal-send" style="
+                    padding: 10px 20px;
+                    border: none;
+                    background: #10b981;
+                    color: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">发送</button>
+            </div>
+        `;
+
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+
+        document.getElementById('modal-cancel').onclick = () => modal.remove();
+        document.getElementById('modal-send').onclick = () => {
+            const text = document.getElementById('custom-command-input').value;
+            if (text.trim()) {
+                findAndInsertText(text);
+            }
+            modal.remove();
+        };
+
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.remove();
+        };
+    }
+
+    // 初始化悬浮按钮
+    createFloatingButton();
 
     // 启动定时器，每3秒执行一次
     console.log('[AutoScript] 脚本已启动，每3秒执行一次');
