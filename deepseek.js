@@ -49,6 +49,7 @@
 
             try {
                 textarea.focus();
+                document.execCommand('insertText', false, "");
                 document.execCommand('insertText', false, text);
                 console.log('通过execCommand插入成功');
                 //
@@ -61,7 +62,7 @@
                     } else {
                         console.log('没找到按钮，用方案2');
                     }
-                }, 5000);
+                }, 800);
 
 
 
@@ -575,8 +576,19 @@
  * @returns {Promise<string>} 稳定的文本内容
  */
     async function getStablePreElementText(lastResponseMessage) {
-        // 获取目标元素
-        const targetElement = lastResponseMessage?.querySelectorAll('pre')[0];
+        // 获取目标元素：查找包含span内容为"jsonl"的.md-code-block里面的第一个pre
+        const codeBlocks = lastResponseMessage?.querySelectorAll('.md-code-block');
+        let targetElement = null;
+        
+        for (const block of codeBlocks) {
+            const span = block.querySelector('span');
+            if (span && span.textContent.trim() === 'jsonl') {
+                targetElement = block.querySelector('pre');
+                break;
+            }
+        }
+        
+        const targetElementBody = lastResponseMessage;
 
         if (!targetElement) {
             console.warn('No element with class pre found');
@@ -584,9 +596,9 @@
         }
 
         // 等待内容稳定后获取
-        const stableContent = await getStableTextContent(targetElement, 5000, 100);
+        const stableContent = await getStableTextContent(targetElementBody, 5000, 100);
 
-        return stableContent;
+        return targetElement?.textContent;
     }
     function isValidSequence(arr) {
         if (!Array.isArray(arr) || arr.length === 0) return false;
