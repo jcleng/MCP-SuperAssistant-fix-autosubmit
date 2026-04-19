@@ -14,9 +14,15 @@
  */
 (function () {
     'use strict';
+    // MCP服务器地址
+    const serverUrl = "http://localhost:3006/mcp";
 
     // 存储已处理的call_id，避免重复处理
     const processedCallIds = [];
+    // 公共变量存储可用的工具/资源/提示
+    let availableTools = [];
+    let availableResources = [];
+    let availablePrompts = [];
     const jsonlErr = `jsonl格式不对,需要遵循以下格式并且call_id增加:
 {"type": "function_call_start", "name": "function_name", "call_id": 1}
 {"type": "description", "text": "Short 1 line of what this function does"}
@@ -138,9 +144,119 @@
         return result;
     }
 
+    // 请求单个 JSON-RPC 方法并解析响应（支持 SSE 流式解析）
+    async function callMCPMethod(method, requestId) {
+        const jsonRpcRequest = {
+            jsonrpc: "2.0",
+            id: requestId,
+            method: method,
+            params: {}
+        };
+
+        console.log(`[initTools] 请求 ${method}:`, JSON.stringify(jsonRpcRequest, null, 2));
+
+        try {
+            const response = await fetch(serverUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Accept: "application/json, text/event-stream",
+                },
+                body: JSON.stringify(jsonRpcRequest),
+            });
+
+            const contentType = response.headers.get("content-type") || "";
+            let resultData = null;
+
+            if (contentType.includes("text/event-stream")) {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine.startsWith("data: ")) continue;
+
+                        const dataStr = trimmedLine.slice(6).trim();
+                        if (!dataStr || dataStr === "[DONE]") continue;
+
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.result) resultData = data.result;
+                        } catch (e) {
+                            console.error(`[initTools] SSE 解析失败:`, e);
+                        }
+                    }
+                }
+
+                if (buffer.trim().startsWith("data: ")) {
+                    const dataStr = buffer.trim().slice(6).trim();
+                    if (dataStr && dataStr !== "[DONE]") {
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.result) resultData = data.result;
+                        } catch (e) {
+                            console.error(`[initTools] 最后一行解析失败:`, e);
+                        }
+                    }
+                }
+            } else {
+                const result = await response.json();
+                resultData = result.result;
+            }
+
+            return resultData;
+        } catch (error) {
+            console.error(`[initTools] 请求 ${method} 失败:`, error);
+            return null;
+        }
+    }
+
+    // 初始化工具/资源/提示列表
+    async function initTools() {
+        console.log('[initTools] 开始获取可用工具列表...');
+
+        try {
+            const [toolsResult, resourcesResult, promptsResult] = await Promise.all([
+                callMCPMethod("tools/list", 1),
+                callMCPMethod("resources/list", 2),
+                callMCPMethod("prompts/list", 3)
+            ]);
+
+            if (toolsResult?.tools) {
+                availableTools = toolsResult.tools;
+                console.log(`[initTools] 获取到 ${availableTools.length} 个工具:`, availableTools.map(t => t.name).join(', '));
+            }
+
+            if (resourcesResult?.resources) {
+                availableResources = resourcesResult.resources;
+                console.log(`[initTools] 获取到 ${availableResources.length} 个资源:`, availableResources.map(r => r.uri).join(', '));
+            }
+
+            if (promptsResult?.prompts) {
+                availablePrompts = promptsResult.prompts;
+                console.log(`[initTools] 获取到 ${availablePrompts.length} 个提示:`, availablePrompts.map(p => p.name).join(', '));
+            }
+
+            console.log('[initTools] 初始化完成');
+            console.log('availableTools:', availableTools);
+            console.log('availableResources:', availableResources);
+            console.log('availablePrompts:', availablePrompts);
+        } catch (error) {
+            console.error('[initTools] 获取工具列表失败:', error);
+        }
+    }
+
     // 执行请求
     async function callMCPWithJSONRPC(exampleJSONL, callback) {
-        const serverUrl = "http://localhost:3006/mcp";
         const jsonRpcRequest = convertJSONLtoJSONRPC(exampleJSONL);
         console.log('jsonRpcRequest', jsonRpcRequest);
         // 检查重复 call_id
@@ -711,6 +827,7 @@
                 border-radius: 8px;
                 font-family: monospace;
                 font-size: 13px;
+                white-space: pre-wrap;
                 resize: vertical;
                 box-sizing: border-box;
             " placeholder='请输入'></textarea>
@@ -745,7 +862,17 @@
         document.body.appendChild(modal);
         const response = await fetch(initMdUrl);
         const markdown = await response.text();
-        document.getElementById('custom-jsonl-input').innerText = markdown;
+
+        let toolsInfo = '';
+        if (availableTools && availableTools.length > 0) {
+            toolsInfo = '## AVAILABLE TOOLS FOR SUPERASSISTANT\n';
+            for (const tool of availableTools) {
+                const description = tool.description || '';
+                toolsInfo += ` - ${tool.name}\n**Description**:\n${description}\n\n`;
+            }
+        }
+
+        document.getElementById('custom-jsonl-input').value = markdown.replace("## AVAILABLE TOOLS FOR SUPERASSISTANT", toolsInfo);
 
         document.getElementById('modal-cancel').onclick = () => modal.remove();
         document.getElementById('modal-insert-only').onclick = () => {
@@ -844,6 +971,9 @@
 
     // 初始化悬浮按钮
     createFloatingButton();
+
+    // 初始化工具列表
+    initTools();
 
     // 启动定时器，每3秒执行一次
     console.log('[AutoScript] 脚本已启动，每3秒执行一次');
