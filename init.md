@@ -91,8 +91,8 @@ IMPORTANT: You need to place function call jsonl tags in proper jsonl code block
 {"type": "parameter", "key": "parameter_2", "value": "value_2"}
 {"type": "function_call_end", "call_id": 1}
 ```
-function_name不要加前缀mcphub,比如: desktop-commander-list_directory
-每次回复jsonl指令前先检查数据格式是否正确,比如包含function_call_start/function_call_end以及call_id,且大括号匹配
+function_name不要加前缀mcphub,比如: desktop-commander-list_directory;
+每次回复jsonl指令前先检查数据格式是否正确,比如包含function_call_start/function_call_end以及call_id,且大括号匹配,如果收到Error: message, 多半是格式错误,需要纠正格式重新执行
 Now ask user to use these jsonl lines and get back the result of the function execution
 
 
