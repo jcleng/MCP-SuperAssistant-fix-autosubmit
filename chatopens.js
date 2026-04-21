@@ -1031,7 +1031,9 @@
     }
 
     // 初始化悬浮按钮
-    createFloatingButton();
+    setTimeout(() => {
+        createFloatingButton();
+    }, 6000);
 
     // 初始化工具列表
     initTools();
