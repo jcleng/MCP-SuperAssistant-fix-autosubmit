@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         直接调用MCP
+// @name         qwenAutoMCP
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  获取jsonl数据执行任务
@@ -14,9 +14,25 @@
  */
 (function () {
     'use strict';
+    // MCP服务器地址
+    const serverUrl = "http://localhost:3006/mcp";
+
+    // 存储已处理的call_id，避免重复处理
+    const processedCallIds = [];
+    // 公共变量存储可用的工具/资源/提示
+    let availableTools = [];
+    let availableResources = [];
+    let availablePrompts = [];
+    const jsonlErr = `jsonl格式不对,需要遵循以下格式并且call_id增加:
+{"type": "function_call_start", "name": "function_name", "call_id": 1}
+{"type": "description", "text": "Short 1 line of what this function does"}
+{"type": "parameter", "key": "parameter_1", "value": "value_1"}
+{"type": "parameter", "key": "parameter_2", "value": "value_2"}
+{"type": "function_call_end", "call_id": 1}
+`;
     let lastText = '';
-    // 用于存储已点击过的 call-id，避免重复点击
-    const clickedCallIds = new Set();
+    const initMdUrl = 'https://gitproxy.mrhjx.cn/https://raw.githubusercontent.com/jcleng/MCP-SuperAssistant-fix-autosubmit/refs/heads/main/init.md';
+    const cworkMdUrl = 'https://gitproxy.mrhjx.cn/https://raw.githubusercontent.com/Lucifer1H/open-cowork/refs/heads/main/command/cowork.md';
     // 查找并插入文本到输入框
     function findAndInsertText(text) {
         text = `<function_result>${text}</function_result>`;
@@ -34,27 +50,29 @@
 
             try {
                 textarea.focus();
+                document.execCommand('insertText', false, "");
                 document.execCommand('insertText', false, text);
                 console.log('通过execCommand插入成功');
-
-                // 触发键盘回车事件
-                const enterEvent = new KeyboardEvent('keydown', {
-                    key: 'Enter',
-                    keyCode: 13,
-                    code: 'Enter',
-                    which: 13,
-                    bubbles: true,
-                    cancelable: true
-                });
+                //
                 setTimeout(() => {
-                    textarea.focus();
-                    textarea.dispatchEvent(enterEvent);
-                    console.log('回车');
-                }, 3000);
+                    // FIXME:
+                    const sendBtn = document.querySelector('.send-button');
+                    if (sendBtn) {
+                        sendBtn.click();
+                        console.log('已点击发送按钮');
+                    } else {
+                        console.log('没找到按钮，用方案2');
+                    }
+                }, 800);
+
+
+
+
+
                 return true;
 
             } catch (error) {
-                console.error(`插入textarea[${i}]时出错:`, error);
+                console.log(`插入textarea[${i}]时出错:`, error);
             }
         }
 
@@ -62,82 +80,962 @@
         return false;
     }
 
+    // 解析jsonl到rpc
+    function convertJSONLtoJSONRPC(jsonlData) {
+        const lines = jsonlData;
+        let result = {
+            jsonrpc: "2.0",
+            id: null,
+            method: "",
+            params: {
+                name: "",
+                arguments: {},
+            },
+        };
 
+        let currentCallId = null;
+        let functionName = "";
+        let description = "";
 
+        for (const line of lines) {
+            try {
+                const obj = line;
+
+                switch (obj.type) {
+                    case "function_call_start":
+                        currentCallId = obj.call_id;
+                        functionName = obj.name;
+                        result.id = currentCallId;
+                        result.method = "tools/call";
+                        result.params.name = functionName;
+                        break;
+
+                    case "description":
+                        description = obj.text;
+                        // 可以将描述作为元数据添加到params中
+                        if (!result.params.arguments) {
+                            result.params.arguments = {};
+                        }
+                        result.params.arguments._description = description;
+                        break;
+
+                    case "parameter":
+                        if (!result.params.arguments) {
+                            result.params.arguments = {};
+                        }
+                        result.params.arguments[obj.key] = obj.value;
+                        break;
+
+                    case "function_call_end":
+                        // 验证call_id是否匹配
+                        if (currentCallId !== obj.call_id) {
+                            console.warn(
+                                `警告: 函数调用结束的ID不匹配: ${currentCallId} !== ${obj.call_id}`
+                            );
+                        }
+                        break;
+
+                    default:
+                        console.warn(`未知的事件类型: ${obj.type}`);
+                }
+            } catch (error) {
+                console.log(`解析JSONL行失败: ${line}`, error);
+            }
+        }
+
+        return result;
+    }
+
+    // 请求单个 JSON-RPC 方法并解析响应（支持 SSE 流式解析）
+    async function callMCPMethod(method, requestId) {
+        const jsonRpcRequest = {
+            jsonrpc: "2.0",
+            id: requestId,
+            method: method,
+            params: {}
+        };
+
+        console.log(`[initTools] 请求 ${method}:`, JSON.stringify(jsonRpcRequest, null, 2));
+
+        try {
+            const response = await fetch(serverUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Accept: "application/json, text/event-stream",
+                },
+                body: JSON.stringify(jsonRpcRequest),
+            });
+
+            const contentType = response.headers.get("content-type") || "";
+            let resultData = null;
+
+            if (contentType.includes("text/event-stream")) {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine.startsWith("data: ")) continue;
+
+                        const dataStr = trimmedLine.slice(6).trim();
+                        if (!dataStr || dataStr === "[DONE]") continue;
+
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.result) resultData = data.result;
+                        } catch (e) {
+                            console.error(`[initTools] SSE 解析失败:`, e);
+                        }
+                    }
+                }
+
+                if (buffer.trim().startsWith("data: ")) {
+                    const dataStr = buffer.trim().slice(6).trim();
+                    if (dataStr && dataStr !== "[DONE]") {
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.result) resultData = data.result;
+                        } catch (e) {
+                            console.error(`[initTools] 最后一行解析失败:`, e);
+                        }
+                    }
+                }
+            } else {
+                const result = await response.json();
+                resultData = result.result;
+            }
+
+            return resultData;
+        } catch (error) {
+            console.error(`[initTools] 请求 ${method} 失败:`, error);
+            return null;
+        }
+    }
+
+    // 初始化工具/资源/提示列表
+    async function initTools() {
+        console.log('[initTools] 开始获取可用工具列表...');
+
+        try {
+            const [toolsResult, resourcesResult, promptsResult] = await Promise.all([
+                callMCPMethod("tools/list", 1),
+                callMCPMethod("resources/list", 2),
+                callMCPMethod("prompts/list", 3)
+            ]);
+
+            if (toolsResult?.tools) {
+                availableTools = toolsResult.tools;
+                console.log(`[initTools] 获取到 ${availableTools.length} 个工具:`, availableTools.map(t => t.name).join(', '));
+            }
+
+            if (resourcesResult?.resources) {
+                availableResources = resourcesResult.resources;
+                console.log(`[initTools] 获取到 ${availableResources.length} 个资源:`, availableResources.map(r => r.uri).join(', '));
+            }
+
+            if (promptsResult?.prompts) {
+                availablePrompts = promptsResult.prompts;
+                console.log(`[initTools] 获取到 ${availablePrompts.length} 个提示:`, availablePrompts.map(p => p.name).join(', '));
+            }
+
+            console.log('[initTools] 初始化完成');
+            console.log('availableTools:', availableTools);
+            console.log('availableResources:', availableResources);
+            console.log('availablePrompts:', availablePrompts);
+        } catch (error) {
+            console.error('[initTools] 获取工具列表失败:', error);
+        }
+    }
+
+    // 执行请求
+    async function callMCPWithJSONRPC(exampleJSONL, callback) {
+        const jsonRpcRequest = convertJSONLtoJSONRPC(exampleJSONL);
+        console.log('jsonRpcRequest', jsonRpcRequest);
+        // 检查重复 call_id
+        if (jsonRpcRequest.id && processedCallIds.includes(jsonRpcRequest.id)) {
+            // console.log(`已处理过call_id: ${jsonRpcRequest.id}，跳过`);
+            // return null;
+        }
+
+        console.log("发送JSON-RPC请求:\n", JSON.stringify(jsonRpcRequest, null, 2));
+
+        try {
+            const response = await fetch(serverUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Accept: "application/json, text/event-stream",
+                },
+                body: JSON.stringify(jsonRpcRequest),
+            });
+
+            console.log("\n响应状态:", response.status);
+            const contentType = response.headers.get("content-type") || "";
+            console.log("内容类型:", contentType);
+
+            let resultText = "";
+
+            if (contentType.includes("text/event-stream")) {
+                // ========== 修复：SSE 流式解析（支持跨 chunk 拼接）==========
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = ""; // 【关键】缓存不完整行
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    // 拼接 chunk 到缓冲区
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // 按行分割（只处理完整行）
+                    const lines = buffer.split("\n");
+                    // 最后一行可能不完整，放回缓冲区
+                    buffer = lines.pop();
+
+                    // 逐行解析
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine.startsWith("data: ")) continue;
+
+                        const dataStr = trimmedLine.slice(6).trim();
+                        if (!dataStr || dataStr === "[DONE]") continue;
+
+                        try {
+                            const data = JSON.parse(dataStr);
+                            console.log("解析 SSE 数据:", data);
+
+                            // 拼接所有文本（修复：不再丢失）
+                            if (data.error?.message) { // 错误
+                                resultText = data.error?.message
+                            }
+                            if (data.result?.content) {
+                                for (const content of data.result.content) {
+                                    if (content.text) resultText += content.text;
+                                }
+                            }
+                        } catch (e) {
+                            // 修复：打印真实错误，方便排查
+                            console.error("SSE 数据解析失败:", e, "\n原始数据:", dataStr);
+                        }
+                    }
+                }
+
+                // 处理缓冲区剩余的最后一行
+                if (buffer.trim().startsWith("data: ")) {
+                    const dataStr = buffer.trim().slice(6).trim();
+                    if (dataStr && dataStr !== "[DONE]") {
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.result?.content) {
+                                for (const content of data.result.content) {
+                                    if (content.text) resultText += content.text;
+                                }
+                            }
+                        } catch (e) {
+                            console.error("最后一行解析失败:", e, buffer);
+                        }
+                    }
+                }
+            } else {
+                // ========== 修复：普通 JSON 响应（不再 break）==========
+                const result = await response.json();
+                console.log("\n普通响应结果:\n", JSON.stringify(result, null, 2));
+
+                if (result.result?.content) {
+                    for (const content of result.result.content) {
+                        if (content.text) resultText += content.text; // 修复：拼接，不 break
+                    }
+                }
+            }
+
+            // 回调
+            if (callback && typeof callback === "function" && resultText) {
+                callback(resultText);
+            }
+
+            // 标记已处理
+            if (jsonRpcRequest.id) {
+                processedCallIds.push(jsonRpcRequest.id);
+            }
+
+            console.log("最终完整结果:\n", resultText);
+            return resultText;
+        } catch (error) {
+            console.error("调用失败:", error);
+            return null;
+        }
+    }
+    /**
+     * 将函数调用数据组装为 MCP With JSON-RPC 的 body 参数
+     * @param {Array} functionCallData - 函数调用数据数组
+     * @returns {Object} MCP JSON-RPC 请求对象
+     */
+    function assembleMCPJSONRPCBody(functionCallData) {
+        // 提取函数调用信息
+        let functionStart = null;
+        let parameters = {};
+        let description = null;
+
+        for (const item of functionCallData) {
+            switch (item.type) {
+                case 'function_call_start':
+                    functionStart = item;
+                    break;
+                case 'description':
+                    description = item.text;
+                    break;
+                case 'parameter':
+                    if (item.key && item.value !== undefined) {
+                        parameters[item.key] = item.value;
+                    }
+                    break;
+                case 'function_call_end':
+                    // 不需要额外处理，只是标记结束
+                    break;
+            }
+        }
+
+        // 验证必需字段
+        if (!functionStart) {
+            throw new Error('Missing function_call_start in the data');
+        }
+
+        if (!functionStart.name) {
+            throw new Error('Missing function name in function_call_start');
+        }
+
+        // 构建 JSON-RPC 请求对象
+        const jsonRPCBody = {
+            jsonrpc: '2.0',
+            id: functionStart.call_id || Date.now(), // 使用 call_id 或生成唯一 ID
+            method: 'tools/call',
+            params: {
+                name: functionStart.name,
+                arguments: parameters
+            }
+        };
+
+        // 如果有描述信息，可以添加到 params 中（可选）
+        if (description) {
+            jsonRPCBody.params._description = description;
+        }
+
+        return jsonRPCBody;
+    }
+    /**
+     * 从 JSON 格式的函数调用内容中提取参数
+     * @param {string} content - 包含 JSON 函数调用的文本内容
+     * @returns {Object} 参数名到参数值的映射对象
+     */
+    function extractJSONParameters(content) {
+        const parameters = [];
+
+        // 验证输入
+        if (!content || typeof content !== 'string') {
+            console.debug('[JSON Parser] extractJSONParameters: Invalid content');
+            return parameters;
+        }
+
+        // 解析单行 JSON 对象
+        function parseJSONLine(line) {
+            try {
+                const trimmed = line.trim();
+                // console.log('trimmed', trimmed);
+
+                if (!trimmed) return null;
+
+                // 清理语言标签（如 "jsonCopy code"）
+                let cleaned = trimmed;
+                // 移除常见的语言标签前缀
+                cleaned = cleaned.replace(/^(jsonl?|javascript|typescript|python|bash|shell)(\s*copy(\s*code)?)?\s*/i, '');
+                // 移除 "Copy code" 等按钮文本
+                cleaned = cleaned.replace(/^[cC]opy(\s+code)?\s*/i, '');
+                cleaned = cleaned.replace(/^\uFEFF/, '');
+                cleaned = cleaned.replace(/\u00A0/g, ' ');
+                console.log('cleaned', cleaned);
+                if (!cleaned || (!cleaned.startsWith('{') && !cleaned.startsWith('['))) {
+                    return null;
+                }
+
+                const parsed = JSON.parse(cleaned);
+
+                // 验证是否为有效的函数调用行
+                if (!parsed.type || typeof parsed.type !== 'string') {
+                    return null;
+                }
+
+                return parsed;
+            } catch (e) {
+                console.log('error', e, line)
+                return null;
+            }
+        }
+
+        // 分割成行（支持 Unicode 换行符）
+        const lines = content.split(/\r?\n|\u2028|\u2029/);
+
+        // 第一遍：从完整的、可解析的 JSON 行中提取参数
+        for (const line of lines) {
+            // console.log('parsed', line);
+            const parsed = parseJSONLine(line);
+            // console.log('parsed', parsed);
+            if (!parsed) continue;
+            parameters.push(parsed)
+        }
+
+        return parameters;
+    }
+    /**
+     * 获取指定元素的内容，等待内容稳定后返回
+     * @param {HTMLElement} element - 目标DOM元素
+     * @param {number} stabilityTimeoutMs - 稳定性检测超时时间（毫秒），默认5000ms
+     * @param {number} checkIntervalMs - 检查间隔（毫秒），默认100ms
+     * @returns {Promise<string>} 稳定的文本内容
+     */
+    async function getStableTextContent(element, stabilityTimeoutMs = 5000, checkIntervalMs = 100) {
+        if (!element) {
+            throw new Error('Element is null or undefined');
+        }
+
+        let lastContent = element.textContent || '';
+        let lastChangeTime = Date.now();
+        let hasChange = false;
+
+        return new Promise((resolve, reject) => {
+            const startTime = Date.now();
+            let checkInterval = null;
+            let timeoutId = null;
+
+            // 清理函数
+            const cleanup = () => {
+                if (checkInterval) clearInterval(checkInterval);
+                if (timeoutId) clearTimeout(timeoutId);
+            };
+
+            // 检查内容是否稳定
+            const checkStability = () => {
+                const currentContent = element.textContent || '';
+                const now = Date.now();
+
+                // 检查内容是否有变化
+                if (currentContent !== lastContent) {
+                    // 内容发生变化，更新时间戳和内容
+                    lastContent = currentContent;
+                    lastChangeTime = now;
+                    hasChange = true;
+
+                    if (window.debugMode) {
+                        console.log(`[getStableTextContent] Content changed at ${new Date(now).toISOString()}`);
+                    }
+                }
+
+                // 检查是否稳定（距离上次变化超过稳定时间）
+                const timeSinceLastChange = now - lastChangeTime;
+                const isStable = timeSinceLastChange >= stabilityTimeoutMs;
+
+                // 检查是否超时（从开始到现在超过最大等待时间）
+                const totalElapsed = now - startTime;
+                const maxWaitTime = stabilityTimeoutMs * 2; // 最大等待时间为稳定时间的2倍
+                const isTimeout = totalElapsed >= maxWaitTime;
+
+                if (isStable || isTimeout) {
+                    if (isTimeout && hasChange) {
+                        console.warn(`[getStableTextContent] Timeout waiting for content to stabilize after ${totalElapsed}ms, returning last content`);
+                    } else if (isTimeout && !hasChange) {
+                        console.log(`[getStableTextContent] No changes detected within ${totalElapsed}ms`);
+                    } else {
+                        console.log(`[getStableTextContent] Content stabilized after ${timeSinceLastChange}ms without changes`);
+                    }
+
+                    cleanup();
+                    resolve(lastContent);
+                }
+            };
+
+            // 启动定时检查
+            checkInterval = setInterval(checkStability, checkIntervalMs);
+
+            // 设置总超时保护
+            timeoutId = setTimeout(() => {
+                cleanup();
+                const finalContent = element.textContent || '';
+                console.warn(`[getStableTextContent] Total timeout reached after ${stabilityTimeoutMs * 2}ms, returning current content`);
+                resolve(finalContent);
+            }, stabilityTimeoutMs * 2);
+        });
+    }
+    /**
+ * 原始方法的改进版本（使用async/await）
+ * @param {HTMLElement} lastResponseMessage - 包含响应消息的DOM元素
+ * @returns {Promise<string>} 稳定的文本内容
+ */
+    async function getStablePreElementText(lastResponseMessage) {
+        // 获取目标元素：查找包含span内容为"jsonl"的.md-code-block里面的第一个pre
+        const codeBlocks = lastResponseMessage?.querySelectorAll('.qwen-markdown-code');
+        let targetElement = null;
+
+        for (const block of codeBlocks) {
+            const span = block.querySelector('div');
+            if (span && span.textContent.trim() === 'jsonl') {
+                targetElement = block.querySelector('.monaco-scrollable-element');
+                break;
+            }
+        }
+
+        const targetElementBody = lastResponseMessage;
+
+        if (!targetElement) {
+            console.warn('No element with class pre found');
+            return '';
+        }
+
+        // 等待内容稳定后获取
+        const stableContent = await getStableTextContent(targetElementBody, 5000, 100);
+
+        return targetElement?.innerText;
+    }
+    function isValidSequence(arr) {
+        if (!Array.isArray(arr) || arr.length === 0) return false;
+
+        const firstType = arr[0]?.type;
+        const lastType = arr[arr.length - 1]?.type;
+
+        return firstType === 'function_call_start' && lastType === 'function_call_end';
+    }
+    // 执行最后一次jsonl
+    async function runJsonl() {
+        const responseMessages = document.querySelectorAll('.ds-markdown');
+        const lastResponseMessage = responseMessages[responseMessages.length - 1];
+        const preElementsText = await getStablePreElementText(lastResponseMessage);
+        const jsonlDataArr = extractJSONParameters(preElementsText);
+        // 调用MCP服务
+        callMCPWithJSONRPC(jsonlDataArr, (resultText) => {
+            console.log('MCP调用完成，调用回调函数', resultText);
+            findAndInsertText(resultText);
+            lastText = preElementsText;
+        });
+    }
     /**
      * 主循环函数
      */
-    function mainLoop() {
+    async function mainLoop() {
         try {
-            // 查找最后一个具有chat-response-message-right类的元素
+            // 查找最后一个具有agent-chat__speech-text--box-left类的元素
             const responseMessages = document.querySelectorAll('.chat-response-message-right');
+            const lastResponseMessage = responseMessages[responseMessages.length - 1];
+            // 获取所有pre标签
+            // var preElementsText = lastResponseMessage.querySelectorAll('.language-jsonl')[0].textContent;
+            const preElementsText = await getStablePreElementText(lastResponseMessage);
+            console.log('preElementsText', preElementsText);
 
-            if (responseMessages.length === 0) {
-                console.log('未找到.chat-response-message-right元素');
-                return;
-            }
+            // DEBUG:
+            // preElementsText = `{"type": "function_call_start", "name": "mcphub.desktop-commander-start_process", "call_id": 3}
+            // {"type": "description", "text": "运行pwd命令获取当前工作目录"}
+            // {"type": "parameter", "key": "command", "value": "pwd"}
+            // {"type": "parameter", "key": "timeout_ms", "value": 5000}
+            // {"type": "function_call_end", "call_id": 3}`;
+            // [
+            //     {
+            //         "type": "function_call_start",
+            //         "name": "mcphub.desktop-commander-get_file_info",
+            //         "call_id": 6
+            //     },
+            //     {
+            //         "type": "description",
+            //         "text": "检查yuanbao.js文件是否存在并获取文件信息"
+            //     },
+            //     {
+            //         "type": "parameter",
+            //         "key": "path",
+            //         "value": "/home/jcleng/work/mywork/MCP-SuperAssistant-fix-autosubmit/yuanbao.js"
+            //     },
+            //     {
+            //         "type": "function_call_end",
+            //         "call_id": 6
+            //     }
+            // ];
+            // 将所有pre标签的内容拼接起来
+            const jsonlDataArr = extractJSONParameters(preElementsText);
+            console.log('jsonlDataArr', jsonlDataArr, JSON.stringify(jsonlDataArr));
+            // return;
 
-            const lastSegment = responseMessages[responseMessages.length - 1];
-            // 2. 获取该元素内的 .call-id
-            const callIdElement = lastSegment.querySelector('.call-id');
-            if (!callIdElement) {
-                console.log('[AutoScript] 未找到 .call-id 元素');
-                return;
-            }
 
-            const callId = callIdElement.textContent.trim();
-            if (!callId) {
-                console.log('[AutoScript] call-id 值为空');
-                return;
-            }
 
-            console.log('[AutoScript] 获取到 call-id:', callId);
 
-            // 3. 检查是否已点击过，避免重复点击
-            if (clickedCallIds.has(callId)) {
-                console.log('[AutoScript] call-id', callId, '已点击过，跳过');
-            } else {
-                // 4. 点击 .execute-button
-                const executeButton = lastSegment.querySelector('.execute-button');
-                if (executeButton) {
-                    console.log('[AutoScript] 点击执行按钮');
-                    executeButton.click();
-                    clickedCallIds.add(callId);
-                } else {
-                    console.log('[AutoScript] 未找到 .execute-button 按钮');
+
+            // console.log('找到JSONL数据:', jsonlDataArr);
+
+            // 从JSONL中提取call_id
+            try {
+                const lines = jsonlDataArr
+                console.log('lines', lines);
+
+                let callId = null;
+
+
+                for (const _key in lines) {
+                    const line = lines[_key];
+                    console.log('⭕', line);
+                    const obj = line;
+                    // console.log('找到obj数据:', obj);
+                    if (obj.type === "function_call_start") {
+                        callId = obj.call_id;
+                        break;
+                    }
                 }
-            }
 
-            // 5. 获取 .function-result-success 的最后一个值
-            const successResults = document.querySelectorAll('.function-result-success');
-            if (successResults.length === 0) {
-                console.log('[AutoScript] 未找到 .function-result-success 元素');
-                return;
-            }
+                if (callId) {
+                    // 检查是否已处理过
+                    // if (processedCallIds.includes(callId)) {
+                    //     console.log(`call_id ${callId} 已处理过，跳过`);
+                    //     return;
+                    // }
+                    if (lastText == preElementsText) {
+                        return;
+                    }
+                    if (!isValidSequence(jsonlDataArr)) {
+                        // findAndInsertText(jsonlErr);
+                        return;
+                    }
 
-            const lastSuccessResult = successResults[successResults.length - 1];
-            const currentText = lastSuccessResult.textContent.trim();
-
-            console.log('[AutoScript] 获取到结果值:', currentText);
-            if (currentText && currentText !== lastText) {
-                console.log('检测到文本变化:', currentText);
-                // 尝试插入到textarea
-                const inserted = findAndInsertText(currentText);
-
-                if (inserted) {
-                    // 更新上次文本记录
-                    lastText = currentText;
+                    // 调用MCP服务
+                    callMCPWithJSONRPC(jsonlDataArr, (resultText) => {
+                        console.log('MCP调用完成，调用回调函数', resultText);
+                        findAndInsertText(resultText);
+                        lastText = preElementsText;
+                    });
                 } else {
-                    console.log('文本变化但插入失败，下次重新尝试');
+                    if (jsonlDataArr?.length > 0) {
+                        // findAndInsertText(jsonlErr);
+                        return;
+                    }
+                    console.log('未找到call_id，跳过');
                 }
+            } catch (parseError) {
+                console.log('解析JSONL数据失败:', parseError);
             }
-
-
 
         } catch (error) {
             console.error('主循环执行出错:', error);
         }
     }
+
+    // 创建悬浮按钮和菜单
+    function createFloatingButton() {
+        const btn = document.createElement('div');
+        btn.id = 'deepseek-mcp-fab';
+        btn.innerHTML = '📋';
+        btn.style.cssText = `
+            position: fixed;
+            bottom: 80px;
+            right: 20px;
+            width: 50px;
+            height: 50px;
+            background: #2563eb;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 999999;
+            transition: transform 0.2s;
+        `;
+        btn.onmouseenter = () => btn.style.transform = 'scale(1.1)';
+        btn.onmouseleave = () => btn.style.transform = 'scale(1)';
+
+        const menu = document.createElement('div');
+        menu.id = 'deepseek-mcp-menu';
+        menu.style.cssText = `
+            position: fixed;
+            bottom: 140px;
+            right: 20px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+            display: none;
+            flex-direction: column;
+            min-width: 180px;
+            overflow: hidden;
+            z-index: 999999;
+        `;
+
+        const menuItems = [
+            { text: '✨ 初始化数据', action: 'custom' },
+            { text: '❌ jsonl格式错误', action: 'submit' },
+            { text: '💬 自定义指令', action: 'command' },
+            { text: '📄执行jsonl', action: 'run_jsonl' },
+        ];
+
+        menuItems.forEach(item => {
+            const menuItem = document.createElement('div');
+            menuItem.textContent = item.text;
+            menuItem.style.cssText = `
+                padding: 14px 18px;
+                cursor: pointer;
+                border-bottom: 1px solid #eee;
+                font-size: 14px;
+                color: #333;
+            `;
+            menuItem.onmouseenter = () => menuItem.style.background = '#f5f5f5';
+            menuItem.onmouseleave = () => menuItem.style.background = 'white';
+            menuItem.onclick = () => handleMenuAction(item.action);
+            menu.appendChild(menuItem);
+        });
+
+        btn.onclick = () => {
+            menu.style.display = menu.style.display === 'flex' ? 'none' : 'flex';
+        };
+
+        document.body.appendChild(btn);
+        document.body.appendChild(menu);
+
+        // 点击其他地方关闭菜单
+        document.addEventListener('click', (e) => {
+            if (!btn.contains(e.target) && !menu.contains(e.target)) {
+                menu.style.display = 'none';
+            }
+        });
+    }
+
+    function handleMenuAction(action) {
+        document.getElementById('deepseek-mcp-menu').style.display = 'none';
+
+        if (action === 'custom') {
+            showCustomInputModal();
+        } else if (action === 'submit') {
+            submitCurrentInput();
+        } else if (action === 'command') {
+            showCommandModal();
+        } else if (action === 'run_jsonl') {
+            runJsonl();
+        }
+    }
+
+    async function showCustomInputModal() {
+        const modal = document.createElement('div');
+        modal.id = 'deepseek-mcp-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000000;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+        `;
+
+        content.innerHTML = `
+            <h3 style="margin: 0 0 16px 0;">📝 插入自定义数据</h3>
+            <textarea id="custom-jsonl-input" style="
+                width: 100%;
+                height: 300px;
+                padding: 12px;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                font-family: monospace;
+                font-size: 13px;
+                white-space: pre-wrap;
+                resize: vertical;
+                box-sizing: border-box;
+            " placeholder='请输入'></textarea>
+            <div style="margin-top: 16px; display: flex; gap: 12px; justify-content: flex-end;">
+                <button id="modal-cancel" style="
+                    padding: 10px 20px;
+                    border: 1px solid #ddd;
+                    background: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">取消</button>
+                <button id="modal-insert-only" style="
+                    padding: 10px 20px;
+                    border: none;
+                    background: #6b7280;
+                    color: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">只插入</button>
+                <button id="modal-insert-submit" style="
+                    padding: 10px 20px;
+                    border: none;
+                    background: #2563eb;
+                    color: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">插入并提交</button>
+            </div>
+        `;
+
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+        const response = await fetch(initMdUrl);
+        const markdown = await response.text();
+
+        let toolsInfo = '';
+        if (availableTools && availableTools.length > 0) {
+            toolsInfo = '## AVAILABLE TOOLS FOR SUPERASSISTANT\n';
+            for (const tool of availableTools) {
+                const description = tool.description || '';
+                toolsInfo += ` - ${tool.name}\n**Description**:\n${description}\n\n`;
+            }
+        }
+
+        document.getElementById('custom-jsonl-input').value = markdown.replace("## AVAILABLE TOOLS FOR SUPERASSISTANT", toolsInfo);
+
+        document.getElementById('modal-cancel').onclick = () => modal.remove();
+        document.getElementById('modal-insert-only').onclick = () => {
+            const text = document.getElementById('custom-jsonl-input').value;
+            if (text.trim()) {
+                findAndInsertText(text);
+            }
+            modal.remove();
+        };
+        document.getElementById('modal-insert-submit').onclick = () => {
+            const text = document.getElementById('custom-jsonl-input').value;
+            if (text.trim()) {
+                findAndInsertText(text);
+            }
+            modal.remove();
+        };
+
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.remove();
+        };
+    }
+
+    function submitCurrentInput() {
+        findAndInsertText(jsonlErr);
+    }
+
+    function showCommandModal() {
+        const modal = document.createElement('div');
+        modal.id = 'deepseek-mcp-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000000;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+        `;
+
+        content.innerHTML = `
+            <h3 style="margin: 0 0 16px 0;">💬 自定义指令</h3>
+            <div style="margin-bottom: 12px;">
+                <select id="command-source-select" style="
+                    padding: 8px 12px;
+                    border: 1px solid #ddd;
+                    border-radius: 6px;
+                    font-size: 14px;
+                    cursor: pointer;
+                    width: 100%;
+                ">
+                    <option value="custom">自定义输入</option>
+                    <option value="cwork">Cwork 指令</option>
+                </select>
+            </div>
+            <textarea id="custom-command-input" style="
+                width: 100%;
+                height: 150px;
+                padding: 12px;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                font-size: 14px;
+                resize: vertical;
+                box-sizing: border-box;
+            " placeholder="请输入您的自定义指令..."></textarea>
+            <div style="margin-top: 16px; display: flex; gap: 12px; justify-content: flex-end;">
+                <button id="modal-cancel" style="
+                    padding: 10px 20px;
+                    border: 1px solid #ddd;
+                    background: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">取消</button>
+                <button id="modal-send" style="
+                    padding: 10px 20px;
+                    border: none;
+                    background: #10b981;
+                    color: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">发送</button>
+            </div>
+        `;
+
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+
+        document.getElementById('command-source-select').onchange = async (e) => {
+            const textarea = document.getElementById('custom-command-input');
+            if (e.target.value === 'cwork') {
+                textarea.value = '加载中...';
+                try {
+                    const res = await fetch(cworkMdUrl);
+                    const text = await res.text();
+                    textarea.value = text;
+                } catch (err) {
+                    textarea.value = '加载失败: ' + err.message;
+                }
+            } else if (e.target.value === 'custom') {
+                textarea.value = '';
+                textarea.placeholder = '请输入您的自定义指令...';
+            }
+        };
+
+        document.getElementById('modal-cancel').onclick = () => modal.remove();
+        document.getElementById('modal-send').onclick = () => {
+            const text = document.getElementById('custom-command-input').value;
+            if (text.trim()) {
+                findAndInsertText(text);
+            }
+            modal.remove();
+        };
+
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.remove();
+        };
+    }
+
+    // 初始化悬浮按钮
+    createFloatingButton();
+
+    // 初始化工具列表
+    initTools();
 
     // 启动定时器，每3秒执行一次
     console.log('[AutoScript] 脚本已启动，每3秒执行一次');
