@@ -14,10 +14,16 @@
  */
 (function () {
     'use strict';
+    // MCP服务器地址
+    const serverUrl = "http://localhost:3006/mcp";
 
     // 存储已处理的call_id，避免重复处理
     const processedCallIds = [];
-    const jsonlErr = `jsonl格式不对,需要遵循以下格式并且call_id增加,function_name不要加前缀mcphub,比如desktop-commander-list_directory:
+    // 公共变量存储可用的工具/资源/提示
+    let availableTools = [];
+    let availableResources = [];
+    let availablePrompts = [];
+    const jsonlErr = `jsonl格式不对,需要遵循以下格式并且call_id增加:
 {"type": "function_call_start", "name": "function_name", "call_id": 1}
 {"type": "description", "text": "Short 1 line of what this function does"}
 {"type": "parameter", "key": "parameter_1", "value": "value_1"}
@@ -25,11 +31,12 @@
 {"type": "function_call_end", "call_id": 1}
 `;
     let lastText = '';
-
+    const initMdUrl = 'https://gitproxy.mrhjx.cn/https://raw.githubusercontent.com/jcleng/MCP-SuperAssistant-fix-autosubmit/refs/heads/main/init.md';
+    const cworkMdUrl = 'https://gitproxy.mrhjx.cn/https://raw.githubusercontent.com/Lucifer1H/open-cowork/refs/heads/main/command/cowork.md';
     // 查找并插入文本到输入框
     function findAndInsertText(text) {
         text = `<function_result>${text}</function_result>`;
-        const textareas = document.querySelectorAll('.chat-input-editor');
+        const textareas = document.querySelectorAll('.ql-editor');
 
         if (textareas.length === 0) {
             console.log('未找到textarea元素');
@@ -42,19 +49,17 @@
             console.log('尝试插入到textarea:', i);
 
             try {
-                textarea.focus();
-                document.execCommand('insertText', false, text);
-                console.log('通过execCommand插入成功');
-                //
+                insertTextToTextarea(textarea, text);
+
                 setTimeout(() => {
                     const sendBtn = document.getElementById('yuanbao-send-btn');
                     if (sendBtn) {
                         sendBtn.click();
                         console.log('已点击发送按钮');
                     } else {
-                        console.log('没找到按钮，用方案2');
+                        console.log('没找到按钮');
                     }
-                }, 3000);
+                }, 1000);
 
 
 
@@ -69,6 +74,10 @@
 
         console.log('所有尝试失败');
         return false;
+    }
+    function insertTextToTextarea(a, text) {
+        a.focus();
+        document.execCommand('insertText', false, text);
     }
 
     // 解析jsonl到rpc
@@ -137,15 +146,125 @@
         return result;
     }
 
+    // 请求单个 JSON-RPC 方法并解析响应（支持 SSE 流式解析）
+    async function callMCPMethod(method, requestId) {
+        const jsonRpcRequest = {
+            jsonrpc: "2.0",
+            id: requestId,
+            method: method,
+            params: {}
+        };
+
+        console.log(`[initTools] 请求 ${method}:`, JSON.stringify(jsonRpcRequest, null, 2));
+
+        try {
+            const response = await fetch(serverUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Accept: "application/json, text/event-stream",
+                },
+                body: JSON.stringify(jsonRpcRequest),
+            });
+
+            const contentType = response.headers.get("content-type") || "";
+            let resultData = null;
+
+            if (contentType.includes("text/event-stream")) {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine.startsWith("data: ")) continue;
+
+                        const dataStr = trimmedLine.slice(6).trim();
+                        if (!dataStr || dataStr === "[DONE]") continue;
+
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.result) resultData = data.result;
+                        } catch (e) {
+                            console.error(`[initTools] SSE 解析失败:`, e);
+                        }
+                    }
+                }
+
+                if (buffer.trim().startsWith("data: ")) {
+                    const dataStr = buffer.trim().slice(6).trim();
+                    if (dataStr && dataStr !== "[DONE]") {
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.result) resultData = data.result;
+                        } catch (e) {
+                            console.error(`[initTools] 最后一行解析失败:`, e);
+                        }
+                    }
+                }
+            } else {
+                const result = await response.json();
+                resultData = result.result;
+            }
+
+            return resultData;
+        } catch (error) {
+            console.error(`[initTools] 请求 ${method} 失败:`, error);
+            return null;
+        }
+    }
+
+    // 初始化工具/资源/提示列表
+    async function initTools() {
+        console.log('[initTools] 开始获取可用工具列表...');
+
+        try {
+            const [toolsResult, resourcesResult, promptsResult] = await Promise.all([
+                callMCPMethod("tools/list", 1),
+                callMCPMethod("resources/list", 2),
+                callMCPMethod("prompts/list", 3)
+            ]);
+
+            if (toolsResult?.tools) {
+                availableTools = toolsResult.tools;
+                console.log(`[initTools] 获取到 ${availableTools.length} 个工具:`, availableTools.map(t => t.name).join(', '));
+            }
+
+            if (resourcesResult?.resources) {
+                availableResources = resourcesResult.resources;
+                console.log(`[initTools] 获取到 ${availableResources.length} 个资源:`, availableResources.map(r => r.uri).join(', '));
+            }
+
+            if (promptsResult?.prompts) {
+                availablePrompts = promptsResult.prompts;
+                console.log(`[initTools] 获取到 ${availablePrompts.length} 个提示:`, availablePrompts.map(p => p.name).join(', '));
+            }
+
+            console.log('[initTools] 初始化完成');
+            console.log('availableTools:', availableTools);
+            console.log('availableResources:', availableResources);
+            console.log('availablePrompts:', availablePrompts);
+        } catch (error) {
+            console.error('[initTools] 获取工具列表失败:', error);
+        }
+    }
+
     // 执行请求
     async function callMCPWithJSONRPC(exampleJSONL, callback) {
-        const serverUrl = "http://localhost:3006/mcp";
         const jsonRpcRequest = convertJSONLtoJSONRPC(exampleJSONL);
         console.log('jsonRpcRequest', jsonRpcRequest);
         // 检查重复 call_id
         if (jsonRpcRequest.id && processedCallIds.includes(jsonRpcRequest.id)) {
-            console.log(`已处理过call_id: ${jsonRpcRequest.id}，跳过`);
-            return null;
+            // console.log(`已处理过call_id: ${jsonRpcRequest.id}，跳过`);
+            // return null;
         }
 
         console.log("发送JSON-RPC请求:\n", JSON.stringify(jsonRpcRequest, null, 2));
@@ -458,7 +577,6 @@
  * @returns {Promise<string>} 稳定的文本内容
  */
     async function getStablePreElementText(lastResponseMessage) {
-        // 获取目标元素
         const targetElement = lastResponseMessage?.querySelectorAll('.language-jsonl')[0];
 
         if (!targetElement) {
@@ -483,10 +601,10 @@
     /**
      * 主循环函数
      */
-    async function mainLoop() {
+    async function mainLoop(again) {
         try {
             // 查找最后一个具有agent-chat__speech-text--box-left类的元素
-            const responseMessages = document.querySelectorAll('.agent-chat__speech-text--box-left');
+            const responseMessages = document.querySelectorAll('.agent-chat__speech-text');
             const lastResponseMessage = responseMessages[responseMessages.length - 1];
             // 获取所有pre标签
             // var preElementsText = lastResponseMessage.querySelectorAll('.language-jsonl')[0].textContent;
@@ -555,23 +673,23 @@
                     //     console.log(`call_id ${callId} 已处理过，跳过`);
                     //     return;
                     // }
-                    if (lastText == preElementsText) {
+                    if (lastText == preElementsText && typeof again == 'undefined') {
                         return;
                     }
                     if (!isValidSequence(jsonlDataArr)) {
-                        findAndInsertText(jsonlErr);
+                        // findAndInsertText(jsonlErr);
                         return;
                     }
 
                     // 调用MCP服务
-                    callMCPWithJSONRPC(jsonlDataArr, (resultText) => {
+                    await callMCPWithJSONRPC(jsonlDataArr, (resultText) => {
                         console.log('MCP调用完成，调用回调函数', resultText);
                         findAndInsertText(resultText);
                         lastText = preElementsText;
                     });
                 } else {
                     if (jsonlDataArr?.length > 0) {
-                        findAndInsertText(jsonlErr);
+                        // findAndInsertText(jsonlErr);
                         return;
                     }
                     console.log('未找到call_id，跳过');
@@ -585,10 +703,317 @@
         }
     }
 
-    // 启动定时器，每3秒执行一次
-    console.log('[AutoScript] 脚本已启动，每3秒执行一次');
-    setInterval(mainLoop, 3000);
+    // 创建悬浮按钮和菜单
+    function createFloatingButton() {
+        const btn = document.createElement('div');
+        btn.id = 'deepseek-mcp-fab';
+        btn.innerHTML = '📋';
+        btn.style.cssText = `
+            position: fixed;
+            bottom: 80px;
+            right: 20px;
+            width: 50px;
+            height: 50px;
+            background: #2563eb;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 999999;
+            transition: transform 0.2s;
+        `;
+        btn.onmouseenter = () => btn.style.transform = 'scale(1.1)';
+        btn.onmouseleave = () => btn.style.transform = 'scale(1)';
 
-    // 立即执行一次
-    mainLoop();
+        const menu = document.createElement('div');
+        menu.id = 'deepseek-mcp-menu';
+        menu.style.cssText = `
+            position: fixed;
+            bottom: 140px;
+            right: 20px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+            display: none;
+            flex-direction: column;
+            min-width: 180px;
+            overflow: hidden;
+            z-index: 999999;
+        `;
+
+        const menuItems = [
+            { text: '✨ 初始化数据', action: 'custom' },
+            { text: '❌ jsonl格式错误', action: 'submit' },
+            { text: '💬 自定义指令', action: 'command' },
+            { text: '📄执行jsonl', action: 'run_jsonl' },
+        ];
+
+        menuItems.forEach(item => {
+            const menuItem = document.createElement('div');
+            menuItem.textContent = item.text;
+            menuItem.style.cssText = `
+                padding: 14px 18px;
+                cursor: pointer;
+                border-bottom: 1px solid #eee;
+                font-size: 14px;
+                color: #333;
+            `;
+            menuItem.onmouseenter = () => menuItem.style.background = '#f5f5f5';
+            menuItem.onmouseleave = () => menuItem.style.background = 'white';
+            menuItem.onclick = () => handleMenuAction(item.action);
+            menu.appendChild(menuItem);
+        });
+
+        btn.onclick = () => {
+            menu.style.display = menu.style.display === 'flex' ? 'none' : 'flex';
+        };
+
+        document.body.appendChild(btn);
+        document.body.appendChild(menu);
+
+        // 点击其他地方关闭菜单
+        document.addEventListener('click', (e) => {
+            if (!btn.contains(e.target) && !menu.contains(e.target)) {
+                menu.style.display = 'none';
+            }
+        });
+    }
+
+    function handleMenuAction(action) {
+        document.getElementById('deepseek-mcp-menu').style.display = 'none';
+
+        if (action === 'custom') {
+            showCustomInputModal();
+        } else if (action === 'submit') {
+            submitCurrentInput();
+        } else if (action === 'command') {
+            showCommandModal();
+        } else if (action === 'run_jsonl') {
+            mainLoop(true);
+        }
+    }
+
+    async function showCustomInputModal() {
+        const modal = document.createElement('div');
+        modal.id = 'deepseek-mcp-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000000;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+        `;
+
+        content.innerHTML = `
+            <h3 style="margin: 0 0 16px 0;">📝 插入自定义数据</h3>
+            <textarea id="custom-jsonl-input" style="
+                width: 100%;
+                height: 300px;
+                padding: 12px;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                font-family: monospace;
+                font-size: 13px;
+                white-space: pre-wrap;
+                resize: vertical;
+                box-sizing: border-box;
+            " placeholder='请输入'></textarea>
+            <div style="margin-top: 16px; display: flex; gap: 12px; justify-content: flex-end;">
+                <button id="modal-cancel" style="
+                    padding: 10px 20px;
+                    border: 1px solid #ddd;
+                    background: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">取消</button>
+                <button id="modal-insert-only" style="
+                    padding: 10px 20px;
+                    border: none;
+                    background: #6b7280;
+                    color: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">只插入</button>
+                <button id="modal-insert-submit" style="
+                    padding: 10px 20px;
+                    border: none;
+                    background: #2563eb;
+                    color: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">插入并提交</button>
+            </div>
+        `;
+
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+        const response = await fetch(initMdUrl);
+        const markdown = await response.text();
+
+        let toolsInfo = '';
+        if (availableTools && availableTools.length > 0) {
+            toolsInfo = '## AVAILABLE TOOLS FOR SUPERASSISTANT\n';
+            for (const tool of availableTools) {
+                const description = tool.description || '';
+                toolsInfo += ` - ${tool.name}\n**Description**:\n${description}\n\n`;
+            }
+        }
+
+        document.getElementById('custom-jsonl-input').value = markdown.replace("## AVAILABLE TOOLS FOR SUPERASSISTANT", toolsInfo);
+
+        document.getElementById('modal-cancel').onclick = () => modal.remove();
+        document.getElementById('modal-insert-only').onclick = () => {
+            const text = document.getElementById('custom-jsonl-input').value;
+            if (text.trim()) {
+                findAndInsertText(text);
+            }
+            modal.remove();
+        };
+        document.getElementById('modal-insert-submit').onclick = () => {
+            const text = document.getElementById('custom-jsonl-input').value;
+            if (text.trim()) {
+                findAndInsertText(text);
+            }
+            modal.remove();
+        };
+
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.remove();
+        };
+    }
+
+    function submitCurrentInput() {
+        findAndInsertText(jsonlErr);
+    }
+
+    function showCommandModal() {
+        const modal = document.createElement('div');
+        modal.id = 'deepseek-mcp-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000000;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+        `;
+
+        content.innerHTML = `
+            <h3 style="margin: 0 0 16px 0;">💬 自定义指令</h3>
+            <div style="margin-bottom: 12px;">
+                <select id="command-source-select" style="
+                    padding: 8px 12px;
+                    border: 1px solid #ddd;
+                    border-radius: 6px;
+                    font-size: 14px;
+                    cursor: pointer;
+                    width: 100%;
+                ">
+                    <option value="custom">自定义输入</option>
+                    <option value="cwork">Cwork 指令</option>
+                </select>
+            </div>
+            <textarea id="custom-command-input" style="
+                width: 100%;
+                height: 150px;
+                padding: 12px;
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                font-size: 14px;
+                resize: vertical;
+                box-sizing: border-box;
+            " placeholder="请输入您的自定义指令..."></textarea>
+            <div style="margin-top: 16px; display: flex; gap: 12px; justify-content: flex-end;">
+                <button id="modal-cancel" style="
+                    padding: 10px 20px;
+                    border: 1px solid #ddd;
+                    background: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">取消</button>
+                <button id="modal-send" style="
+                    padding: 10px 20px;
+                    border: none;
+                    background: #10b981;
+                    color: white;
+                    border-radius: 6px;
+                    cursor: pointer;
+                ">发送</button>
+            </div>
+        `;
+
+        modal.appendChild(content);
+        document.body.appendChild(modal);
+
+        document.getElementById('command-source-select').onchange = async (e) => {
+            const textarea = document.getElementById('custom-command-input');
+            if (e.target.value === 'cwork') {
+                textarea.value = '加载中...';
+                try {
+                    const res = await fetch(cworkMdUrl);
+                    const text = await res.text();
+                    textarea.value = text;
+                } catch (err) {
+                    textarea.value = '加载失败: ' + err.message;
+                }
+            } else if (e.target.value === 'custom') {
+                textarea.value = '';
+                textarea.placeholder = '请输入您的自定义指令...';
+            }
+        };
+
+        document.getElementById('modal-cancel').onclick = () => modal.remove();
+        document.getElementById('modal-send').onclick = () => {
+            const text = document.getElementById('custom-command-input').value;
+            if (text.trim()) {
+                findAndInsertText(text);
+            }
+            modal.remove();
+        };
+
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.remove();
+        };
+    }
+
+    // 初始化悬浮按钮
+    createFloatingButton();
+
+    // 初始化工具列表
+    initTools();
+
+    // 启动循环，每次等待异步完成后再调度下一次
+    console.log('[AutoScript] 脚本已启动，每3秒执行一次');
+    async function scheduleMainLoop() {
+        await mainLoop();
+        setTimeout(scheduleMainLoop, 3000);
+    }
+    scheduleMainLoop();
 })();
